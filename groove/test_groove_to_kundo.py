@@ -483,9 +483,7 @@ class MailboxesTest(ConverterTestCase):
     def test_non_ascii_mailbox_name_is_slugified(self):
         self.convert([_ticket(mailbox="Café Example.com", mailbox_id="1004")])
 
-        self.assertEqual(
-            self.manifest()[0]["filename"], "cafe-example-com-1004.ndjson"
-        )
+        self.assertEqual(self.manifest()[0]["filename"], "cafe-example-com-1004.ndjson")
 
 
 class ConversationFieldsTest(ConverterTestCase):

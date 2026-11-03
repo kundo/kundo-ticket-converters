@@ -193,7 +193,9 @@ def _convert_attachments(
     referenced as `cid:{content_id}` in the body; Groove sets `content_id` on
     more attachments than are truly inline.
     """
-    downloadable = [att for att in attachments if _is_https_url(att.get("download_url"))]
+    downloadable = [
+        att for att in attachments if _is_https_url(att.get("download_url"))
+    ]
     result = []
     for att in downloadable:
         content_id = att.get("content_id")
