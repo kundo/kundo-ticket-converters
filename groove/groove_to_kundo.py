@@ -39,12 +39,15 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 FORMAT_VERSION = 1
 SOURCE = "groove"
 DEFAULT_ACCOUNT = "default"
+ACCOUNT_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+MAX_TAG_LENGTH = 50
 
 TRUNCATION_NOTICE = (
     "<p>[Meddelandet kortades vid importen eftersom det var för långt.]</p>"
@@ -77,6 +80,9 @@ class Summary:
     dropped_note_attachments: int = 0
     truncated_messages: int = 0
     dropped_attachments: int = 0
+    dropped_attachments_without_https: int = 0
+    dropped_duplicate_messages: int = 0
+    changed_tags: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +171,31 @@ def _fit_html_body(html: str, max_length: int | None) -> tuple[str, bool]:
     return cut + TRUNCATION_NOTICE, True
 
 
-def _convert_attachments(attachments: list[dict], body_html: str) -> list[dict]:
+def _is_https_url(url: object) -> bool:
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url)
+        return parts.scheme == "https" and bool(parts.hostname)
+    except ValueError:
+        return False
+
+
+def _convert_attachments(
+    attachments: list[dict], body_html: str
+) -> tuple[list[dict], int]:
     """
+    Returns the attachments and how many were dropped because they have no
+    HTTPS `download_url`, which the import refuses.
     Use `download_url` — Groove's `url` field redirects to a presigned S3
     URL that expires after 60 seconds and is unusable for a later import run.
     An attachment is treated as inline only when its `content_id` is actually
     referenced as `cid:{content_id}` in the body; Groove sets `content_id` on
     more attachments than are truly inline.
     """
+    downloadable = [att for att in attachments if _is_https_url(att.get("download_url"))]
     result = []
-    for att in attachments:
+    for att in downloadable:
         content_id = att.get("content_id")
         cid_ref = f"cid:{content_id}" if content_id else None
         result.append(
@@ -185,7 +206,7 @@ def _convert_attachments(attachments: list[dict], body_html: str) -> list[dict]:
                 "inline_ref": cid_ref if cid_ref and cid_ref in body_html else None,
             }
         )
-    return result
+    return result, len(attachments) - len(downloadable)
 
 
 def _cap_attachments(
@@ -208,22 +229,54 @@ def _convert_message(change: dict, limits: Limits) -> tuple[dict, Counter]:
     html_body, truncated = _fit_html_body(
         change.get("body") or "", limits.max_html_body_length
     )
-    attachments, dropped = _cap_attachments(
-        _convert_attachments(change.get("attachments") or [], html_body),
-        limits.max_attachments_per_message,
+    downloadable, without_https = _convert_attachments(
+        change.get("attachments") or [], html_body
     )
-    stats = Counter(truncated_messages=int(truncated), dropped_attachments=dropped)
+    attachments, dropped = _cap_attachments(
+        downloadable, limits.max_attachments_per_message
+    )
+    stats = Counter(
+        truncated_messages=int(truncated),
+        dropped_attachments=dropped,
+        dropped_attachments_without_https=without_https,
+    )
     return {"html_body": html_body, "attachments": attachments}, stats
 
 
+def _fit_tags(tags: list) -> tuple[list[str], int]:
+    """Returns the tags and how many of them were changed. Kundo splits tags
+    on commas, so the import refuses a tag with a comma; this splits it the
+    same way. A tag longer than the import allows is cut."""
+    fitted: list[str] = []
+    changed = 0
+    for tag in tags:
+        if not isinstance(tag, str):
+            continue
+        parts = [part.strip()[:MAX_TAG_LENGTH] for part in tag.split(",")]
+        parts = [part for part in parts if part]
+        if parts != [tag]:
+            changed += 1
+        fitted.extend(part for part in parts if part not in fitted)
+    return fitted, changed
+
+
 def _convert_ticket(
-    ticket: dict, account: str, force_closed: bool, limits: Limits
-) -> tuple[dict, Counter] | None:
+    ticket: dict,
+    account: str,
+    force_closed: bool,
+    limits: Limits,
+    seen_message_ids: set[str],
+) -> tuple[dict | None, Counter]:
     """
-    Returns the conversation plus counts of what was changed or left out, or
-    None if the ticket has no public message to build a dialog from.
+    Returns the conversation plus counts of what was changed or left out. The
+    conversation is None if the ticket has no public message to build a
+    dialog from.
     Attachments on internal notes are left out because notes in Kundo cannot
     have attachments.
+
+    The import refuses a file where two messages have the same id, also in
+    different conversations, so a message with an id in `seen_message_ids` is
+    left out. The ids of the messages that are kept are added to it.
     """
     messages: list[dict] = []
     notes: list[dict] = []
@@ -244,19 +297,23 @@ def _convert_ticket(
         if change.get("note"):
             stats["dropped_note_attachments"] += len(change.get("attachments") or [])
             notes.append({**common, "html_body": change.get("body") or ""})
+        elif common["id"] in seen_message_ids:
+            stats["dropped_duplicate_messages"] += 1
         else:
+            seen_message_ids.add(common["id"])
             content, message_stats = _convert_message(change, limits)
             stats += message_stats
             messages.append({**common, **content})
 
     if not messages:
-        return None
+        return None, stats
 
     # Timestamps are ISO-8601 with a fixed "Z" suffix throughout the export,
     # so lexicographic sort matches chronological order.
     messages.sort(key=lambda m: m["created_at"])
     notes.sort(key=lambda n: n["created_at"])
 
+    tags, stats["changed_tags"] = _fit_tags(ticket.get("tags") or [])
     customer = (ticket.get("customer") or {}).get("customer") or {}
     customer_id = customer.get("id") or "unknown"
     conversation = {
@@ -274,7 +331,7 @@ def _convert_ticket(
             "is_agent": False,
         },
         "is_closed": force_closed or ticket.get("state") == "closed",
-        "tags": [t for t in (ticket.get("tags") or []) if isinstance(t, str)],
+        "tags": tags,
         "messages": messages,
         "notes": notes,
     }
@@ -351,6 +408,7 @@ def convert_export(
     output_dir.mkdir(parents=True, exist_ok=True)
     mailboxes: dict[str, _MailboxFiles] = {}
     stats: Counter = Counter()
+    seen_message_ids: set[str] = set()
 
     with ExitStack() as stack:
         for ticket in _iter_raw_tickets(file_path):
@@ -364,12 +422,13 @@ def convert_export(
                     limits.max_conversations_per_file,
                 )
 
-            converted = _convert_ticket(ticket, account, force_closed, limits)
-            if converted is None:
+            conversation, ticket_stats = _convert_ticket(
+                ticket, account, force_closed, limits, seen_message_ids
+            )
+            stats += ticket_stats
+            if conversation is None:
                 stats["skipped_without_public_message"] += 1
                 continue
-            conversation, ticket_stats = converted
-            stats += ticket_stats
             mailboxes[mailbox_id].write(
                 json.dumps(conversation, ensure_ascii=False), conversation
             )
@@ -397,7 +456,31 @@ def format_summary(summary: Summary, output_dir: Path) -> str:
             f"Dropped {summary.dropped_attachments} attachment(s) from messages that "
             "had more attachments than the import allows."
         )
+    if summary.dropped_attachments_without_https:
+        lines.append(
+            f"Dropped {summary.dropped_attachments_without_https} attachment(s) "
+            "without an HTTPS download address, which the import cannot download."
+        )
+    if summary.dropped_duplicate_messages:
+        lines.append(
+            f"Dropped {summary.dropped_duplicate_messages} message(s) with the same "
+            "id as an earlier message."
+        )
+    if summary.changed_tags:
+        lines.append(
+            f"Changed {summary.changed_tags} tag(s): a tag with a comma became one "
+            f"tag for each part, and a tag longer than {MAX_TAG_LENGTH} characters "
+            "was cut."
+        )
     return "\n".join(lines)
+
+
+def _account(value: str) -> str:
+    if not ACCOUNT_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            "use 1-64 characters from A-Z, a-z, 0-9, '.', '_' and '-'"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--account",
         default=DEFAULT_ACCOUNT,
+        type=_account,
         help=(
             "Namespace for the duplicate check. Keep the default to match "
             "earlier imports of the same Groove account."

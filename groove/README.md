@@ -52,8 +52,9 @@ inbox, you get duplicates.
 | An internal note | An internal note |
 | A deleted message | Not imported |
 | State "closed" | A closed conversation |
-| Tags | Tags |
+| Tags | Tags. Kundo does not allow commas in a tag, so a tag with commas becomes one tag for each part. |
 | A customer without an email address | A placeholder address, `groove-user-<id>@groove.invalid` |
+| A message with the same id as an earlier message | Not imported. Kundo uses the id to find messages that it already has. |
 
 ## Limits
 
@@ -65,9 +66,14 @@ keeps the files inside them:
 | 20 000 conversations in each file | The mailbox continues in `<name>-<id>-part2.ndjson`, `-part3` and so on. Upload all parts to the same inbox. |
 | 100 000 characters in each message | The converter cuts the message and adds a note that it was shortened. |
 | 20 attachments on each message | The converter keeps 20. It keeps images that show in the message text first. |
+| 50 characters in each tag | The converter cuts the tag. |
 
 Internal notes in Kundo cannot have attachments, so the converter does not
 include the attachments of internal notes.
 
-At the end, the script tells you how many tickets, messages and attachments
-this applied to.
+Kundo can only download an attachment from an HTTPS address, so the converter
+does not include an attachment that has no HTTPS download address in the
+export.
+
+At the end, the script tells you how many tickets, messages, attachments and
+tags this applied to.

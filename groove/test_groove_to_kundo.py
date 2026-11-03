@@ -100,7 +100,7 @@ def _ticket(
         "customer": {"customer": customer or CUSTOMER},
         "actions": actions
         if actions is not None
-        else [_message_action(), _state_action()],
+        else [_message_action(id=f"message-{id}"), _state_action()],
     }
 
 
@@ -323,6 +323,37 @@ class MessagesAndNotesTest(ConverterTestCase):
         self.assertEqual(self.conversations(), [])
         self.assertEqual(summary.skipped_without_public_message, 1)
 
+    def test_message_with_an_id_seen_before_is_dropped(self):
+        summary = self.convert(
+            [
+                _ticket(
+                    id=1,
+                    actions=[
+                        _message_action(id="1", created_at="2024-01-15T10:00:00Z"),
+                        _message_action(id="1", created_at="2024-01-15T11:00:00Z"),
+                    ],
+                ),
+                _ticket(
+                    id=2,
+                    actions=[
+                        _message_action(id="1", created_at="2024-01-15T10:00:00Z"),
+                        _message_action(id="2", created_at="2024-01-15T11:00:00Z"),
+                    ],
+                ),
+                _ticket(id=3, actions=[_message_action(id="2")]),
+            ]
+        )
+
+        self.assertEqual(
+            {
+                c["external_id"]: [m["id"] for m in c["messages"]]
+                for c in self.conversations()
+            },
+            {"1": ["1"], "2": ["2"]},
+        )
+        self.assertEqual(summary.dropped_duplicate_messages, 3)
+        self.assertEqual(summary.skipped_without_public_message, 1)
+
     def test_empty_title_uses_placeholder(self):
         self.convert([_ticket(title="")])
 
@@ -373,6 +404,31 @@ class AttachmentsTest(ConverterTestCase):
             for c in self.conversations()
         }
         self.assertEqual(inline_refs, {"1": "cid:abc@x", "2": None})
+
+    def test_attachment_without_an_https_download_url_is_dropped(self):
+        summary = self.convert(
+            [
+                _ticket(
+                    actions=[
+                        _message_action(
+                            attachments=[
+                                _attachment(download_url="http://files.example.com/a"),
+                                _attachment(download_url="https://"),
+                                _attachment(download_url=None),
+                                _attachment(file_name="kept.pdf"),
+                            ]
+                        )
+                    ]
+                )
+            ]
+        )
+
+        (conversation,) = self.conversations()
+        self.assertEqual(
+            [a["filename"] for a in conversation["messages"][0]["attachments"]],
+            ["kept.pdf"],
+        )
+        self.assertEqual(summary.dropped_attachments_without_https, 3)
 
     def test_attachments_on_notes_are_dropped_and_counted(self):
         summary = self.convert(
@@ -440,6 +496,13 @@ class ConversationFieldsTest(ConverterTestCase):
         self.assertEqual(
             conversation["requester"]["email"], "groove-user-c404@groove.invalid"
         )
+
+    def test_tags_with_a_comma_are_split_and_long_tags_are_cut(self):
+        summary = self.convert([_ticket(tags=["vip", "a, b", "x" * 60, 5, "b"])])
+
+        (conversation,) = self.conversations()
+        self.assertEqual(conversation["tags"], ["vip", "a", "b", "x" * 50])
+        self.assertEqual(summary.changed_tags, 2)
 
     def test_open_state_is_not_closed(self):
         self.convert([_ticket(state="unread")])
@@ -567,19 +630,28 @@ class LimitsTest(ConverterTestCase):
 
 
 class SummaryTest(unittest.TestCase):
-    def test_reports_shortened_messages_and_dropped_attachments(self):
+    def test_reports_what_was_changed_or_dropped(self):
         text = format_summary(
-            Summary(truncated_messages=3, dropped_attachments=4), Path("out")
+            Summary(
+                truncated_messages=3,
+                dropped_attachments=4,
+                dropped_attachments_without_https=5,
+                dropped_duplicate_messages=6,
+                changed_tags=7,
+            ),
+            Path("out"),
         )
 
         self.assertIn("Shortened 3 message(s)", text)
         self.assertIn("Dropped 4 attachment(s) from messages", text)
+        self.assertIn("Dropped 5 attachment(s) without an HTTPS", text)
+        self.assertIn("Dropped 6 message(s) with the same id", text)
+        self.assertIn("Changed 7 tag(s)", text)
 
-    def test_leaves_out_limit_lines_when_nothing_was_changed(self):
+    def test_leaves_out_the_lines_for_what_did_not_happen(self):
         text = format_summary(Summary(), Path("out"))
 
-        self.assertNotIn("Shortened", text)
-        self.assertNotIn("from messages", text)
+        self.assertEqual(len(text.splitlines()), 3)
 
 
 class CommandLineTest(ConverterTestCase):
@@ -619,6 +691,26 @@ class CommandLineTest(ConverterTestCase):
 
         self.assertEqual(exit_info.exception.code, 2)
         self.assertIn("no such file", err.getvalue())
+
+    def test_main_rejects_an_account_that_the_import_refuses(self):
+        _write_pretty_printed(self.export, [_ticket()])
+        err = io.StringIO()
+
+        with redirect_stderr(err), self.assertRaises(SystemExit) as exit_info:
+            main(
+                [
+                    "--file",
+                    str(self.export),
+                    "--output-dir",
+                    str(self.output_dir),
+                    "--account",
+                    "my account",
+                ]
+            )
+
+        self.assertEqual(exit_info.exception.code, 2)
+        self.assertIn("--account", err.getvalue())
+        self.assertFalse(self.output_dir.exists())
 
     def test_runs_as_a_script(self):
         _write_pretty_printed(self.export, [_ticket()])
