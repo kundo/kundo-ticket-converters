@@ -6,6 +6,7 @@ can import into [Kundo](https://www.kundo.se).
 | Helpdesk | Converter |
 |---|---|
 | Groove | [`groove/`](groove/) |
+| Zendesk | [`zendesk/`](zendesk/) |
 
 ## What you need
 
@@ -29,7 +30,7 @@ them and imports nothing from that file.
 ## Attachments
 
 Kundo downloads each attachment from the address in the file. The address
-must use HTTPS and must not need a login. The converters keep the attachment
+must use HTTPS and must not need a login. The converters use the attachment
 addresses from the export, so the attachments must still be available from
 the other helpdesk when you import the files.
 
@@ -37,6 +38,7 @@ the other helpdesk when you import the files.
 
 ```bash
 python3 -m unittest discover -s groove
+python3 -m unittest discover -s zendesk
 ```
 
 ## License
