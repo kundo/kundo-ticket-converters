@@ -6,6 +6,7 @@ can import into [Kundo](https://www.kundo.se).
 | Helpdesk | Converter |
 |---|---|
 | Groove | [`groove/`](groove/) |
+| Kayako | [`kayako/`](kayako/) |
 | Zendesk | [`zendesk/`](zendesk/) |
 
 ## What you need
@@ -38,8 +39,13 @@ the other helpdesk when you import the files.
 
 ```bash
 python3 -m unittest discover -s groove
+python3 -m unittest discover -s kayako
 python3 -m unittest discover -s zendesk
 ```
+
+Each converter is one file that people download alone, so the converters do
+not share code. A change to a rule of the import, for example a limit, must
+be made in each converter.
 
 ## License
 
