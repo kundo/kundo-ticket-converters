@@ -405,7 +405,7 @@ class AttachmentsTest(ConverterTestCase):
         }
         self.assertEqual(inline_refs, {"1": "cid:abc@x", "2": None})
 
-    def test_attachment_without_an_https_download_url_is_dropped(self):
+    def test_attachment_that_kundo_cannot_download_is_dropped(self):
         summary = self.convert(
             [
                 _ticket(
@@ -415,7 +415,14 @@ class AttachmentsTest(ConverterTestCase):
                                 _attachment(download_url="http://files.example.com/a"),
                                 _attachment(download_url="https://"),
                                 _attachment(download_url=None),
+                                _attachment(download_url="https://10.0.0.1/a"),
+                                _attachment(download_url="https://[::1]/a"),
+                                _attachment(download_url="https://169.254.169.254/a"),
                                 _attachment(file_name="kept.pdf"),
+                                _attachment(
+                                    download_url="https://93.184.215.14/a",
+                                    file_name="public-ip.pdf",
+                                ),
                             ]
                         )
                     ]
@@ -426,9 +433,9 @@ class AttachmentsTest(ConverterTestCase):
         (conversation,) = self.conversations()
         self.assertEqual(
             [a["filename"] for a in conversation["messages"][0]["attachments"]],
-            ["kept.pdf"],
+            ["kept.pdf", "public-ip.pdf"],
         )
-        self.assertEqual(summary.dropped_attachments_without_https, 3)
+        self.assertEqual(summary.dropped_undownloadable_attachments, 6)
 
     def test_attachments_on_notes_are_dropped_and_counted(self):
         summary = self.convert(
@@ -633,7 +640,7 @@ class SummaryTest(unittest.TestCase):
             Summary(
                 truncated_messages=3,
                 dropped_attachments=4,
-                dropped_attachments_without_https=5,
+                dropped_undownloadable_attachments=5,
                 dropped_duplicate_messages=6,
                 changed_tags=7,
             ),
@@ -642,7 +649,7 @@ class SummaryTest(unittest.TestCase):
 
         self.assertIn("Shortened 3 message(s)", text)
         self.assertIn("Dropped 4 attachment(s) from messages", text)
-        self.assertIn("Dropped 5 attachment(s) without an HTTPS", text)
+        self.assertIn("Dropped 5 attachment(s) that Kundo cannot download", text)
         self.assertIn("Dropped 6 message(s) with the same id", text)
         self.assertIn("Changed 7 tag(s)", text)
 

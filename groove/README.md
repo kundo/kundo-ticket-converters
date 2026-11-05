@@ -71,9 +71,9 @@ keeps the files inside them:
 Internal notes in Kundo cannot have attachments, so the converter does not
 include the attachments of internal notes.
 
-Kundo can only download an attachment from an HTTPS address, so the converter
-does not include an attachment that has no HTTPS download address in the
-export.
+Kundo can only download an attachment from an HTTPS address that is not a
+private IP address, so the converter does not include an attachment that has
+another download address in the export.
 
 At the end, the script tells you how many tickets, messages, attachments and
 tags this applied to.

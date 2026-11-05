@@ -448,7 +448,7 @@ class AttachmentsTest(ConverterTestCase):
         self.assertEqual(in_body[0]["inline_ref"], ATTACHMENT_URL)
         self.assertIsNone(not_in_body[0]["inline_ref"])
 
-    def test_attachment_without_an_https_url_is_dropped(self):
+    def test_attachment_that_kundo_cannot_download_is_dropped(self):
         summary = self.convert(
             [
                 _conversation(
@@ -459,7 +459,14 @@ class AttachmentsTest(ConverterTestCase):
                                 {"url": "http://acme.kayako.com/a"},
                                 {"url": "abfss://container@account/path/a.pdf"},
                                 {"url": "https://"},
+                                {"url": "https://10.0.0.1/a"},
+                                {"url": "https://[::1]/a"},
+                                {"url": "https://169.254.169.254/a"},
                                 {"url": ATTACHMENT_URL, "name": "kept.pdf"},
+                                {
+                                    "url": "https://93.184.215.14/a",
+                                    "name": "public-ip.pdf",
+                                },
                             ]
                         )
                     ]
@@ -469,9 +476,12 @@ class AttachmentsTest(ConverterTestCase):
 
         (conversation,) = self.conversations()
         (message,) = conversation["messages"]
-        self.assertEqual([a["filename"] for a in message["attachments"]], ["kept.pdf"])
+        self.assertEqual(
+            [a["filename"] for a in message["attachments"]],
+            ["kept.pdf", "public-ip.pdf"],
+        )
         self.assertEqual(message["html_body"], "<p>Hi, I have a billing issue.</p>")
-        self.assertEqual(summary.dropped_attachments_without_https, 4)
+        self.assertEqual(summary.dropped_undownloadable_attachments, 7)
 
     def test_attachments_on_notes_are_dropped_and_counted(self):
         summary = self.convert(

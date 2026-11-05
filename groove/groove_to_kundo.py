@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import ipaddress
 import json
 import logging
 import re
@@ -80,7 +81,7 @@ class Summary:
     dropped_note_attachments: int = 0
     truncated_messages: int = 0
     dropped_attachments: int = 0
-    dropped_attachments_without_https: int = 0
+    dropped_undownloadable_attachments: int = 0
     dropped_duplicate_messages: int = 0
     changed_tags: int = 0
 
@@ -171,22 +172,30 @@ def _fit_html_body(html: str, max_length: int | None) -> tuple[str, bool]:
     return cut + TRUNCATION_NOTICE, True
 
 
-def _is_https_url(url: object) -> bool:
+def _is_downloadable_url(url: object) -> bool:
     if not isinstance(url, str):
         return False
     try:
         parts = urlsplit(url)
-        return parts.scheme == "https" and bool(parts.hostname)
+        host = parts.hostname
     except ValueError:
         return False
+    if parts.scheme != "https" or not host:
+        return False
+    # Kundo refuses an IP address that is not on the public internet. It
+    # checks a host name only when it downloads the file.
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
 
 
 def _convert_attachments(
     attachments: list[dict], body_html: str
 ) -> tuple[list[dict], int]:
     """
-    Returns the attachments and how many were dropped because they have no
-    HTTPS `download_url`, which the import refuses.
+    Returns the attachments and how many were dropped because Kundo cannot
+    download them from their `download_url`.
     Use `download_url` — Groove's `url` field redirects to a presigned S3
     URL that expires after 60 seconds and is unusable for a later import run.
     An attachment is treated as inline only when its `content_id` is actually
@@ -194,7 +203,7 @@ def _convert_attachments(
     more attachments than are truly inline.
     """
     downloadable = [
-        att for att in attachments if _is_https_url(att.get("download_url"))
+        att for att in attachments if _is_downloadable_url(att.get("download_url"))
     ]
     result = []
     for att in downloadable:
@@ -231,7 +240,7 @@ def _convert_message(change: dict, limits: Limits) -> tuple[dict, Counter]:
     html_body, truncated = _fit_html_body(
         change.get("body") or "", limits.max_html_body_length
     )
-    downloadable, without_https = _convert_attachments(
+    downloadable, undownloadable = _convert_attachments(
         change.get("attachments") or [], html_body
     )
     attachments, dropped = _cap_attachments(
@@ -240,7 +249,7 @@ def _convert_message(change: dict, limits: Limits) -> tuple[dict, Counter]:
     stats = Counter(
         truncated_messages=int(truncated),
         dropped_attachments=dropped,
-        dropped_attachments_without_https=without_https,
+        dropped_undownloadable_attachments=undownloadable,
     )
     return {"html_body": html_body, "attachments": attachments}, stats
 
@@ -458,10 +467,11 @@ def format_summary(summary: Summary, output_dir: Path) -> str:
             f"Dropped {summary.dropped_attachments} attachment(s) from messages that "
             "had more attachments than the import allows."
         )
-    if summary.dropped_attachments_without_https:
+    if summary.dropped_undownloadable_attachments:
         lines.append(
-            f"Dropped {summary.dropped_attachments_without_https} attachment(s) "
-            "without an HTTPS download address, which the import cannot download."
+            f"Dropped {summary.dropped_undownloadable_attachments} attachment(s) "
+            "that Kundo cannot download: the address is not HTTPS, or it is an IP "
+            "address that is not public."
         )
     if summary.dropped_duplicate_messages:
         lines.append(

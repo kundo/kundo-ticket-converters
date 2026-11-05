@@ -75,8 +75,8 @@ such URLs, the conversations are imported without those attachments. To
 import the attachments, put them on HTTPS addresses that do not need a login,
 and use those addresses in the export.
 
-The converter does not include an attachment that has no HTTPS URL in the
-export.
+The converter does not include an attachment whose URL in the export does
+not use HTTPS or is a private IP address.
 
 ## The export file
 
